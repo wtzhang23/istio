@@ -6217,6 +6217,30 @@ func TestValidateSidecar(t *testing.T) {
 				},
 			},
 		}, false, false},
+		{"ingress serviceProtocol empty in IPv4", &networking.Sidecar{
+			Ingress: []*networking.IstioIngressListener{
+				{
+					Port: &networking.SidecarPort{
+						Protocol: "http2",
+						Number:   90,
+						Name:     "foo",
+					},
+					DefaultEndpoint: "127.0.0.1:9999",
+				},
+			},
+		}, true, false},
+		{"ingress serviceProtocol empty in IPv6", &networking.Sidecar{
+			Ingress: []*networking.IstioIngressListener{
+				{
+					Port: &networking.SidecarPort{
+						Protocol: "http2",
+						Number:   90,
+						Name:     "foo",
+					},
+					DefaultEndpoint: "[::1]:9999",
+				},
+			},
+		}, true, false},
 		{"ingress serviceProtocol supports same protocol in IPv4", &networking.Sidecar{
 			Ingress: []*networking.IstioIngressListener{
 				{
@@ -6229,21 +6253,21 @@ func TestValidateSidecar(t *testing.T) {
 					ServiceProtocol: "redis",
 				},
 			},
-		}, true, true},
+		}, true, false},
 		{"ingress serviceProtocol supports same protocol in IPv6", &networking.Sidecar{
 			Ingress: []*networking.IstioIngressListener{
 				{
 					Port: &networking.SidecarPort{
-						Protocol: "http2",
+						Protocol: "redis",
 						Number:   90,
 						Name:     "foo",
 					},
 					DefaultEndpoint: "[::1]:9999",
-					ServiceProtocol: "http2",
+					ServiceProtocol: "redis",
 				},
 			},
-		}, true, true},
-		{"ingress serviceProtocol supports HTTP/HTTP2 when protocol is HTTPS in IPv4", &networking.Sidecar{
+		}, true, false},
+		{"ingress serviceProtocol supports http2 when protocol is https in IPv4", &networking.Sidecar{
 			Ingress: []*networking.IstioIngressListener{
 				{
 					Port: &networking.SidecarPort{
@@ -6254,13 +6278,14 @@ func TestValidateSidecar(t *testing.T) {
 					DefaultEndpoint: "127.0.0.1:9999",
 					ServiceProtocol: "http2",
 					Tls: &networking.ServerTLSSettings{
-						Mode:           networking.ServerTLSSettings_SIMPLE,
-						CredentialName: "secret-name",
+						Mode:              networking.ServerTLSSettings_SIMPLE,
+						ServerCertificate: "Captain Jean-Luc Picard",
+						PrivateKey:        "Khan Noonien Singh",
 					},
 				},
 			},
-		}, true, true},
-		{"ingress serviceProtocol supports HTTP/HTTP2 when protocol is HTTPS in IPv6", &networking.Sidecar{
+		}, true, false},
+		{"ingress serviceProtocol supports http2 when protocol is https in IPv6", &networking.Sidecar{
 			Ingress: []*networking.IstioIngressListener{
 				{
 					Port: &networking.SidecarPort{
@@ -6271,46 +6296,49 @@ func TestValidateSidecar(t *testing.T) {
 					DefaultEndpoint: "[::1]:9999",
 					ServiceProtocol: "http2",
 					Tls: &networking.ServerTLSSettings{
-						Mode:           networking.ServerTLSSettings_SIMPLE,
-						CredentialName: "secret-name",
+						Mode:              networking.ServerTLSSettings_SIMPLE,
+						ServerCertificate: "Captain Jean-Luc Picard",
+						PrivateKey:        "Khan Noonien Singh",
 					},
 				},
 			},
-		}, true, true},
+		}, true, false},
 		{"ingress serviceProtocol supports redis when protocol is TLS in IPv4", &networking.Sidecar{
 			Ingress: []*networking.IstioIngressListener{
 				{
 					Port: &networking.SidecarPort{
-						Protocol: "https",
+						Protocol: "tls",
 						Number:   90,
 						Name:     "foo",
 					},
 					DefaultEndpoint: "127.0.0.1:9999",
 					ServiceProtocol: "redis",
 					Tls: &networking.ServerTLSSettings{
-						Mode:           networking.ServerTLSSettings_SIMPLE,
-						CredentialName: "secret-name",
+						Mode:              networking.ServerTLSSettings_SIMPLE,
+						ServerCertificate: "Captain Jean-Luc Picard",
+						PrivateKey:        "Khan Noonien Singh",
 					},
 				},
 			},
-		}, true, true},
+		}, true, false},
 		{"ingress serviceProtocol supports redis when protocol is TLS in IPv6", &networking.Sidecar{
 			Ingress: []*networking.IstioIngressListener{
 				{
 					Port: &networking.SidecarPort{
-						Protocol: "https",
+						Protocol: "tls",
 						Number:   90,
 						Name:     "foo",
 					},
 					DefaultEndpoint: "[::1]:9999",
 					ServiceProtocol: "redis",
 					Tls: &networking.ServerTLSSettings{
-						Mode:           networking.ServerTLSSettings_SIMPLE,
-						CredentialName: "secret-name",
+						Mode:              networking.ServerTLSSettings_SIMPLE,
+						ServerCertificate: "Captain Jean-Luc Picard",
+						PrivateKey:        "Khan Noonien Singh",
 					},
 				},
 			},
-		}, true, true},
+		}, true, false},
 		// We're using the same validation code as DestinationRule, so we're really trusting the TrafficPolicy
 		// validation code's testing. Here we just want to exercise the edge cases around Sidecar specifically.
 		{"valid inbound connection pool", &networking.Sidecar{
