@@ -4,7 +4,7 @@ area: traffic-management
 issue: []
 releaseNotes:
 - |
-  **Added** added the "h2" sidecar port protocol to allow specifying that the downgraded protocol should be http2
+  **Added** added the "service_protocol" field to the sidecar ingress listener configuration to allow specifying that the downgraded protocol should be http2
 upgradeNotes: []
 docs: []
 securityNotes: []

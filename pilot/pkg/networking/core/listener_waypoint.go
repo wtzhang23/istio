@@ -289,8 +289,9 @@ func (lb *ListenerBuilder) buildWaypointInternal(wls []model.WorkloadInfo, svcs 
 					ServicePort: port,
 					TargetPort:  uint32(port.Port),
 				},
-				bind:  "0.0.0.0",
-				hbone: true,
+				serviceProtocol: port.Protocol.AfterTLSTermination(),
+				bind:            "0.0.0.0",
+				hbone:           true,
 				telemetryMetadata: telemetry.FilterChainMetadata{
 					InstanceHostname:           svc.Hostname,
 					KubernetesServiceNamespace: svc.Attributes.Namespace,
@@ -386,8 +387,9 @@ func (lb *ListenerBuilder) buildWaypointInternal(wls []model.WorkloadInfo, svcs 
 					Protocol: protocol.TCP,
 				},
 			},
-			bind:  "0.0.0.0",
-			hbone: true,
+			serviceProtocol: protocol.TCP,
+			bind:            "0.0.0.0",
+			hbone:           true,
 		}
 		tcpChain := &listener.FilterChain{
 			Filters: append([]*listener.Filter{

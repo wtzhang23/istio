@@ -60,6 +60,11 @@ type inboundChainConfig struct {
 	// most usages should just use TargetPort. Port is mostly used for legacy compatibility and
 	// telemetry.
 	port model.ServiceInstancePort
+
+	// serviceProtocol determines the protocol to use when sending requests to the service behind the sidecar.
+	// In other words, this is the protocol that is used after the listener terminates the downstream
+	// connection.
+	serviceProtocol protocol.Instance
 	// bind determines where (IP) this filter chain should bind. Note: typically we just end up using
 	// 'virtual' listener and do not literally bind to port; in these cases this just impacts naming
 	// and telemetry.
@@ -229,7 +234,7 @@ func (lb *ListenerBuilder) buildInboundListeners() []*listener.Listener {
 		if cc.tlsSettings != nil && mtls.Mode == model.MTLSDisable {
 			// Since we are terminating TLS, we need to treat the protocol as if its terminated.
 			// Example: user specifies protocol=HTTPS and user TLS, we will use HTTP
-			cc.port.Protocol = cc.port.Protocol.AfterTLSTermination()
+			cc.port.Protocol = cc.serviceProtocol
 			lp := istionetworking.ModelProtocolToListenerProtocol(cc.port.Protocol)
 			opts = getTLSFilterChainMatchOptions(lp)
 			mtls.TCP = BuildListenerTLSContext(cc.tlsSettings, lb.node, lb.push.Mesh, istionetworking.TransportProtocolTCP, false)
@@ -394,6 +399,7 @@ func (lb *ListenerBuilder) getFilterChainsByServicePort() map[uint32]inboundChai
 		cc := inboundChainConfig{
 			telemetryMetadata: telemetry.FilterChainMetadata{InstanceHostname: i.Service.Hostname},
 			port:              port,
+			serviceProtocol:   port.Protocol.AfterTLSTermination(),
 			clusterName:       model.BuildInboundSubsetKey(int(port.TargetPort)),
 			bind:              actualWildcards[0],
 			bindToPort:        bindToPort,
@@ -450,6 +456,12 @@ func (lb *ListenerBuilder) buildInboundChainConfigs() []inboundChainConfig {
 				},
 				TargetPort: i.Port.Number, // No targetPort support in the API
 			}
+			var serviceProtocol protocol.Instance
+			if i.ServiceProtocol == "" {
+				serviceProtocol = port.Protocol.AfterTLSTermination()
+			} else {
+				serviceProtocol = protocol.Parse(i.ServiceProtocol)
+			}
 			bindtoPort := getBindToPort(i.CaptureMode, lb.node)
 			wildcard := wildCards[lb.node.GetIPMode()][0]
 			// Skip ports we cannot bind to
@@ -468,11 +480,12 @@ func (lb *ListenerBuilder) buildInboundChainConfigs() []inboundChainConfig {
 				telemetryMetadata: telemetry.FilterChainMetadata{
 					InstanceHostname: host.Name(lb.node.SidecarScope.Name + "." + lb.node.SidecarScope.Namespace),
 				},
-				port:        port,
-				clusterName: model.BuildInboundSubsetKey(int(port.TargetPort)),
-				bind:        i.Bind,
-				bindToPort:  bindtoPort,
-				hbone:       lb.node.IsWaypointProxy(),
+				port:            port,
+				serviceProtocol: serviceProtocol,
+				clusterName:     model.BuildInboundSubsetKey(int(port.TargetPort)),
+				bind:            i.Bind,
+				bindToPort:      bindtoPort,
+				hbone:           lb.node.IsWaypointProxy(),
 				configMetadata: &config.Meta{
 					Name:             lb.node.SidecarScope.Name,
 					Namespace:        lb.node.SidecarScope.Namespace,
@@ -498,7 +511,7 @@ func (lb *ListenerBuilder) buildInboundChainConfigs() []inboundChainConfig {
 				// User provided custom TLS settings
 				cc.tlsSettings = i.Tls.DeepCopy()
 				cc.tlsSettings.CipherSuites = security.FilterCipherSuites(cc.tlsSettings.CipherSuites)
-				cc.port.Protocol = cc.port.Protocol.AfterTLSTermination()
+				cc.port.Protocol = cc.serviceProtocol
 			}
 
 			chainsByPort[port.TargetPort] = cc
@@ -740,9 +753,10 @@ func buildInboundHBONEPassthroughChain(lb *ListenerBuilder) []*listener.FilterCh
 			},
 			TargetPort: mtls.Port,
 		},
-		clusterName: util.InboundPassthroughCluster,
-		passthrough: true,
-		hbone:       lb.node.IsWaypointProxy(),
+		serviceProtocol: protocol.Unsupported,
+		clusterName:     util.InboundPassthroughCluster,
+		passthrough:     true,
+		hbone:           lb.node.IsWaypointProxy(),
 	}
 
 	opts := getFilterChainMatchOptions(mtls, istionetworking.ListenerProtocolAuto)
@@ -770,9 +784,10 @@ func buildInboundPassthroughChains(lb *ListenerBuilder) []*listener.FilterChain 
 				},
 				TargetPort: mtls.Port,
 			},
-			clusterName: util.InboundPassthroughCluster,
-			passthrough: true,
-			hbone:       lb.node.IsWaypointProxy(),
+			serviceProtocol: protocol.Unsupported,
+			clusterName:     util.InboundPassthroughCluster,
+			passthrough:     true,
+			hbone:           lb.node.IsWaypointProxy(),
 		}
 		opts := getFilterChainMatchOptions(mtls, istionetworking.ListenerProtocolAuto)
 		filterChains = append(filterChains, lb.inboundChainForOpts(cc, mtls, opts)...)

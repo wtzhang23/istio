@@ -792,6 +792,28 @@ var ValidateSidecar = RegisterValidateFunc("ValidateSidecar",
 				}
 			}
 
+			if i.ServiceProtocol != "" {
+				portProtocol := protocol.Parse(i.Port.Protocol)
+				serviceProtocol := protocol.Parse(i.ServiceProtocol)
+				compatibleProtocols := false
+				switch portProtocol {
+				case protocol.HTTPS:
+					compatibleProtocols = serviceProtocol.IsHTTP()
+				case protocol.TLS:
+					// Technically, this does not support specifying protocol == TLS and serviceProtocol == HTTP.
+					// But this is fine since users should really use HTTPS
+					compatibleProtocols = serviceProtocol.IsTCP()
+				default:
+					// Technically, this does not support specifying protocol == TCP and serviceProtocol ==
+					// Redis/some other protocol. Similarly, users should just leave this field blank or specify
+					// the same protocol.
+					compatibleProtocols = serviceProtocol == portProtocol
+				}
+				if !compatibleProtocols {
+					errs = AppendValidation(errs, fmt.Errorf("sidecar: protocol (%s) not compatible with serviceProtocol (%s)", portProtocol, serviceProtocol))
+				}
+			}
+
 			if i.Tls != nil {
 				if len(i.Tls.SubjectAltNames) > 0 {
 					errs = AppendValidation(errs, fmt.Errorf("sidecar: subjectAltNames is not supported in ingress tls"))

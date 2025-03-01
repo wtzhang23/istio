@@ -43,7 +43,6 @@ func TestParse(t *testing.T) {
 		{"HTTP_PROXY", protocol.HTTP_PROXY},
 		{"https", protocol.HTTPS},
 		{"http2", protocol.HTTP2},
-		{"h2", protocol.H2},
 		{"grpc", protocol.GRPC},
 		{"grpc-web", protocol.GRPCWeb},
 		{"gRPC-Web", protocol.GRPCWeb},
