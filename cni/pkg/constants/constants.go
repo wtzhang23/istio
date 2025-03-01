@@ -14,28 +14,34 @@
 
 package constants
 
+import (
+	"os"
+	"strconv"
+)
+
 // Command line arguments
 const (
 	// Install
-	MountedCNINetDir         = "mounted-cni-net-dir"
-	CNIConfName              = "cni-conf-name"
-	ChainedCNIPlugin         = "chained-cni-plugin"
-	CNINetworkConfigFile     = "cni-network-config-file"
-	CNINetworkConfig         = "cni-network-config"
-	LogLevel                 = "log-level"
-	KubeconfigMode           = "kubeconfig-mode"
-	KubeCAFile               = "kube-ca-file"
-	SkipTLSVerify            = "skip-tls-verify"
-	MonitoringPort           = "monitoring-port"
-	LogUDSSocket             = "log-uds-socket"
-	ZtunnelUDSAddress        = "ztunnel-uds-address"
-	CNIEventSocket           = "cni-event-address"
-	CNIAgentRunDir           = "cni-agent-run-dir"
-	ExcludeNamespaces        = "exclude-namespaces"
-	AmbientEnabled           = "ambient-enabled"
-	AmbientDNSCapture        = "ambient-dns-capture"
-	AmbientIPv6              = "ambient-ipv6"
-	AmbientTPROXYRedirection = "ambient-tproxy-redirection"
+	MountedCNINetDir                  = "mounted-cni-net-dir"
+	CNIConfName                       = "cni-conf-name"
+	ChainedCNIPlugin                  = "chained-cni-plugin"
+	CNINetworkConfigFile              = "cni-network-config-file"
+	CNINetworkConfig                  = "cni-network-config"
+	LogLevel                          = "log-level"
+	KubeconfigMode                    = "kubeconfig-mode"
+	KubeCAFile                        = "kube-ca-file"
+	SkipTLSVerify                     = "skip-tls-verify"
+	MonitoringPort                    = "monitoring-port"
+	LogUDSSocket                      = "log-uds-socket"
+	ZtunnelUDSAddress                 = "ztunnel-uds-address"
+	CNIEventSocket                    = "cni-event-address"
+	CNIAgentRunDir                    = "cni-agent-run-dir"
+	ExcludeNamespaces                 = "exclude-namespaces"
+	AmbientEnabled                    = "ambient-enabled"
+	AmbientDNSCapture                 = "ambient-dns-capture"
+	AmbientIPv6                       = "ambient-ipv6"
+	AmbientDisableSafeUpgrade         = "ambient-disable-safe-upgrade"
+	AmbientReconcilePodRulesOnStartup = "ambient-reconcile-pod-rules-on-startup"
 
 	// Repair
 	RepairEnabled            = "repair-enabled"
@@ -68,6 +74,7 @@ const (
 	ReadinessEndpoint  = "/readyz"
 	ReadinessPort      = "8000"
 	ServiceAccountPath = "/var/run/secrets/kubernetes.io/serviceaccount"
+	SelfNetNSPath      = "/proc/self/ns/net"
 )
 
 // Exposed for testing "constants"
@@ -77,4 +84,15 @@ var (
 	// Well-known subpath we will mount any needed host-mounts under,
 	// to preclude shadowing or breaking any pod-internal mounts
 	HostMountsPath = "/host"
+	// HostNetNSPath is set to "/proc/self/ns/net" by default to prevent unintended execution on the host,
+	// even during test development. At runtime, it is overridden when the ALLOW_SWITCH_TO_HOST_NS
+	// environment variable is set to true (see CNI daemonset), which updates it to "/host/proc/1/ns/net" to align with the actual
+	// host network namespace.
+	HostNetNSPath = SelfNetNSPath
 )
+
+func init() {
+	if allowSwitch, err := strconv.ParseBool(os.Getenv("ALLOW_SWITCH_TO_HOST_NS")); err == nil && allowSwitch {
+		HostNetNSPath = HostMountsPath + "/proc/1/ns/net"
+	}
+}

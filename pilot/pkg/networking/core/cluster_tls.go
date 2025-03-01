@@ -19,10 +19,8 @@ import (
 
 	cluster "github.com/envoyproxy/go-control-plane/envoy/config/cluster/v3"
 	core "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
-	internalupstream "github.com/envoyproxy/go-control-plane/envoy/extensions/transport_sockets/internal_upstream/v3"
 	tlsv3 "github.com/envoyproxy/go-control-plane/envoy/extensions/transport_sockets/tls/v3"
 	http "github.com/envoyproxy/go-control-plane/envoy/extensions/upstreams/http/v3"
-	metadata "github.com/envoyproxy/go-control-plane/envoy/type/metadata/v3"
 	"google.golang.org/protobuf/types/known/structpb"
 
 	"istio.io/api/mesh/v1alpha1"
@@ -35,6 +33,7 @@ import (
 	"istio.io/istio/pilot/pkg/util/protoconv"
 	xdsfilters "istio.io/istio/pilot/pkg/xds/filters"
 	"istio.io/istio/pkg/log"
+	pm "istio.io/istio/pkg/model"
 	"istio.io/istio/pkg/security"
 	"istio.io/istio/pkg/wellknown"
 )
@@ -45,33 +44,6 @@ var istioMtlsTransportSocketMatch = &structpb.Struct{
 	},
 }
 
-func internalUpstreamSocket(inner *core.TransportSocket) *core.TransportSocket {
-	return &core.TransportSocket{
-		Name: "envoy.transport_sockets.internal_upstream",
-		ConfigType: &core.TransportSocket_TypedConfig{TypedConfig: protoconv.MessageToAny(&internalupstream.InternalUpstreamTransport{
-			PassthroughMetadata: []*internalupstream.InternalUpstreamTransport_MetadataValueSource{
-				{
-					Kind: &metadata.MetadataKind{Kind: &metadata.MetadataKind_Host_{}},
-					Name: util.OriginalDstMetadataKey,
-				},
-				{
-					Kind: &metadata.MetadataKind{Kind: &metadata.MetadataKind_Cluster_{
-						Cluster: &metadata.MetadataKind_Cluster{},
-					}},
-					Name: "istio",
-				},
-				{
-					Kind: &metadata.MetadataKind{Kind: &metadata.MetadataKind_Host_{
-						Host: &metadata.MetadataKind_Host{},
-					}},
-					Name: "istio",
-				},
-			},
-			TransportSocket: inner,
-		})},
-	}
-}
-
 func hboneTransportSocket(inner *core.TransportSocket) *cluster.Cluster_TransportSocketMatch {
 	return &cluster.Cluster_TransportSocketMatch{
 		Name: "hbone",
@@ -80,7 +52,7 @@ func hboneTransportSocket(inner *core.TransportSocket) *cluster.Cluster_Transpor
 				model.TunnelLabelShortName: {Kind: &structpb.Value_StringValue{StringValue: model.TunnelHTTP}},
 			},
 		},
-		TransportSocket: internalUpstreamSocket(inner),
+		TransportSocket: util.FullMetadataPassthroughInternalUpstreamTransportSocket(inner),
 	}
 }
 
@@ -241,7 +213,7 @@ func constructUpstreamTLS(opts *buildClusterOpts, tls *networking.ClientTLSSetti
 			res.CertificatePath = tls.ClientCertificate
 			res.PrivateKeyPath = tls.PrivateKey
 			tlsContext.CommonTlsContext.TlsCertificateSdsSecretConfigs = append(tlsContext.CommonTlsContext.TlsCertificateSdsSecretConfigs,
-				sec_model.ConstructSdsSecretConfig(res.GetResourceName()))
+				constructSdsSecretConfigFromFile(res.GetResourceName(), opts.fileCredentialSocketExist))
 		}
 		// If tls.CaCertificate or CaCertificate in Metadata isn't configured, or tls.InsecureSkipVerify is true,
 		// don't set up SdsSecretConfig
@@ -259,7 +231,7 @@ func constructUpstreamTLS(opts *buildClusterOpts, tls *networking.ClientTLSSetti
 			tlsContext.CommonTlsContext.ValidationContextType = &tlsv3.CommonTlsContext_CombinedValidationContext{
 				CombinedValidationContext: &tlsv3.CommonTlsContext_CombinedCertificateValidationContext{
 					DefaultValidationContext:         defaultValidationContext,
-					ValidationContextSdsSecretConfig: sec_model.ConstructSdsSecretConfig(res.GetRootResourceName()),
+					ValidationContextSdsSecretConfig: constructSdsSecretConfigFromFile(res.GetRootResourceName(), opts.fileCredentialSocketExist),
 				},
 			}
 		}
@@ -272,6 +244,13 @@ func constructUpstreamTLS(opts *buildClusterOpts, tls *networking.ClientTLSSetti
 		tlsContext.CommonTlsContext.AlpnProtocols = util.ALPNH2Only
 	}
 	return tlsContext, nil
+}
+
+func constructSdsSecretConfigFromFile(filename string, customFileSDSCluster bool) *tlsv3.SdsSecretConfig {
+	if customFileSDSCluster {
+		return pm.ConstructSdsFilesSecretConfig(filename)
+	}
+	return pm.ConstructSdsSecretConfig(filename)
 }
 
 // applyTLSDefaults applies tls default settings from mesh config to UpstreamTlsContext.

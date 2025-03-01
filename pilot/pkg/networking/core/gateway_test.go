@@ -2156,7 +2156,7 @@ func TestGatewayHTTPRouteConfig(t *testing.T) {
 			Selector: map[string]string{"istio": "ingressgateway"},
 			Servers: []*networking.Server{
 				{
-					Hosts: []string{"example.org"},
+					Hosts: []string{"Example.org"},
 					Port:  &networking.Port{Name: "http", Number: 80, Protocol: "HTTP"},
 					Tls:   &networking.ServerTLSSettings{HttpsRedirect: true},
 				},
@@ -3721,7 +3721,7 @@ func TestBuildGatewayListenersFilters(t *testing.T) {
 			expectedListener: listenertest.ListenerTest{FilterChains: []listenertest.FilterChainTest{
 				{
 					NetworkFilters: []string{
-						xdsfilters.TCPListenerMx.GetName(),
+						xdsfilters.MxFilterName,
 						wellknown.TCPProxy,
 					},
 					HTTPFilters: []string{},
@@ -3814,7 +3814,7 @@ func TestBuildGatewayListenersFilters(t *testing.T) {
 					{
 						TotalMatch: true, // there must be only 1 `istio_authn` network filter
 						NetworkFilters: []string{
-							xdsfilters.TCPListenerMx.GetName(),
+							xdsfilters.MxFilterName,
 							wellknown.TCPProxy,
 						},
 						HTTPFilters: []string{},
@@ -4438,6 +4438,60 @@ func TestGatewayHCMInternalAddressConfig(t *testing.T) {
 			httpConnManager := buildGatewayConnectionManager(&meshconfig.ProxyConfig{}, proxy, false, push)
 			if !reflect.DeepEqual(tt.expectedconfig, httpConnManager.InternalAddressConfig) {
 				t.Errorf("unexpected internal address config, expected: %v, got :%v", tt.expectedconfig, httpConnManager.InternalAddressConfig)
+			}
+		})
+	}
+}
+
+func TestListenerTransportSocketConnectTimeoutForGateway(t *testing.T) {
+	cases := []struct {
+		name            string
+		expectedTimeout int64
+		configs         []config.Config
+	}{
+		{
+			name:            "should set timeout",
+			expectedTimeout: durationpb.New(defaultGatewayTransportSocketConnectTimeout).GetSeconds(),
+			configs: []config.Config{
+				{
+					Meta: config.Meta{Name: "http-server", Namespace: "testns", GroupVersionKind: gvk.Gateway},
+					Spec: &networking.Gateway{
+						Servers: []*networking.Server{
+							{
+								Port: &networking.Port{Name: "http", Number: 80, Protocol: "HTTP"},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			cg := NewConfigGenTest(t, TestOptions{
+				Configs:    tt.configs,
+				MeshConfig: mesh.DefaultMeshConfig(),
+			})
+			cg.PushContext().ServiceIndex.HostnameAndNamespace = map[host.Name]map[string]*pilot_model.Service{
+				"example.local": {
+					"foo": &pilot_model.Service{
+						Hostname: "example.local",
+					},
+				},
+			}
+			proxy := cg.SetupProxy(&proxyGateway)
+			metadata := proxyGatewayMetadata
+			metadata.ProxyConfig = &pilot_model.NodeMetaProxyConfig{
+				GatewayTopology: &meshconfig.Topology{ProxyProtocol: &meshconfig.Topology_ProxyProtocolConfiguration{}},
+			}
+			proxy.Metadata = &metadata
+
+			lb := NewListenerBuilder(proxy, cg.PushContext())
+			builder := cg.ConfigGen.buildGatewayListeners(lb)
+			fc := builder.gatewayListeners[0].FilterChains[0]
+			if fc.TransportSocketConnectTimeout == nil || fc.TransportSocketConnectTimeout.Seconds != tt.expectedTimeout {
+				t.Errorf("expected transport socket connect timeout to be %v on gateway listern's filter chain %v, got %v",
+					tt.expectedTimeout, fc.Name, fc.TransportSocketConnectTimeout)
 			}
 		})
 	}

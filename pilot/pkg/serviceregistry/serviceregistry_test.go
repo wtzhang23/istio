@@ -49,6 +49,7 @@ import (
 	"istio.io/istio/pkg/config"
 	"istio.io/istio/pkg/config/constants"
 	"istio.io/istio/pkg/config/mesh"
+	"istio.io/istio/pkg/config/mesh/meshwatcher"
 	"istio.io/istio/pkg/config/schema/collections"
 	"istio.io/istio/pkg/config/schema/gvk"
 	kubeclient "istio.io/istio/pkg/kube"
@@ -67,7 +68,7 @@ func setupTest(t *testing.T) (model.ConfigStoreController, kubernetes.Interface,
 	delegate := model.NewEndpointIndexUpdater(endpoints)
 	xdsUpdater := xdsfake.NewWithDelegate(delegate)
 	delegate.ConfigUpdateFunc = xdsUpdater.ConfigUpdate
-	meshWatcher := mesh.NewFixedWatcher(&meshconfig.MeshConfig{})
+	meshWatcher := meshwatcher.NewTestWatcher(&meshconfig.MeshConfig{})
 	kc := kubecontroller.NewController(
 		client,
 		kubecontroller.Options{
@@ -982,6 +983,86 @@ func TestWorkloadInstances(t *testing.T) {
 		expectServiceEndpoints(t, fx, expectedSvc, 80, instances)
 	})
 
+	t.Run("ServiceEntry selects Pod that is Failed without IP", func(t *testing.T) {
+		store, kube, fx := setupTest(t)
+		makeIstioObject(t, store, serviceEntry)
+		makePod(t, kube, pod)
+		// Copy the pod since other tests expect it to have an IP.
+		p2 := pod.DeepCopy()
+		instances := []EndpointResponse{{
+			Address: p2.Status.PodIP,
+			Port:    80,
+		}}
+		expectServiceEndpoints(t, fx, expectedSvc, 80, instances)
+
+		// Failed pods should have their endpoints removed from the registry, despite not having an IP.
+		p2.Status.PodIP = ""
+		p2.Status.PodIPs = nil
+		p2.Status.Phase = v1.PodFailed
+		_, err := kube.CoreV1().Pods(p2.Namespace).UpdateStatus(context.TODO(), p2, metav1.UpdateOptions{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		expectServiceEndpoints(t, fx, expectedSvc, 80, []EndpointResponse{})
+	})
+
+	t.Run("ServiceEntry selects Pod that is Failed with an IP", func(t *testing.T) {
+		store, kube, fx := setupTest(t)
+		makeIstioObject(t, store, serviceEntry)
+		makePod(t, kube, pod)
+		p2 := pod.DeepCopy()
+		instances := []EndpointResponse{{
+			Address: p2.Status.PodIP,
+			Port:    80,
+		}}
+		expectServiceEndpoints(t, fx, expectedSvc, 80, instances)
+
+		// Failed pods should have their endpoints removed from the registry
+		p2.Status.Phase = v1.PodFailed
+		_, err := kube.CoreV1().Pods(p2.Namespace).UpdateStatus(context.TODO(), p2, metav1.UpdateOptions{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		expectServiceEndpoints(t, fx, expectedSvc, 80, []EndpointResponse{})
+
+		// Removing the IP should be a no-op
+		p2.Status.PodIP = ""
+		p2.Status.PodIPs = nil
+		_, err = kube.CoreV1().Pods(p2.Namespace).UpdateStatus(context.TODO(), p2, metav1.UpdateOptions{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		expectServiceEndpoints(t, fx, expectedSvc, 80, []EndpointResponse{})
+	})
+
+	t.Run("ServiceEntry selects Pod with IP removed", func(t *testing.T) {
+		store, kube, fx := setupTest(t)
+		makeIstioObject(t, store, serviceEntry)
+		makePod(t, kube, pod)
+		p2 := pod.DeepCopy()
+		instances := []EndpointResponse{{
+			Address: p2.Status.PodIP,
+			Port:    80,
+		}}
+		expectServiceEndpoints(t, fx, expectedSvc, 80, instances)
+
+		// Pods without an IP can't be ready.
+		p2.Status.PodIP = ""
+		p2.Status.PodIPs = nil
+		_, err := kube.CoreV1().Pods(p2.Namespace).UpdateStatus(context.TODO(), p2, metav1.UpdateOptions{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		expectServiceEndpoints(t, fx, expectedSvc, 80, []EndpointResponse{})
+
+		// Failing the pod should be a no-op
+		p2.Status.Phase = v1.PodFailed
+		_, err = kube.CoreV1().Pods(p2.Namespace).UpdateStatus(context.TODO(), p2, metav1.UpdateOptions{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		expectServiceEndpoints(t, fx, expectedSvc, 80, []EndpointResponse{})
+	})
 	t.Run("ServiceEntry selects Pod with targetPort number", func(t *testing.T) {
 		store, kube, fx := setupTest(t)
 		makeIstioObject(t, store, config.Config{
@@ -1681,7 +1762,7 @@ func expectServiceEndpointsFromIndex(t *testing.T, ei *model.EndpointIndex, svc 
 // nolint: unparam
 func expectServiceEndpoints(t *testing.T, fx *xdsfake.Updater, svc *model.Service, port int, expected []EndpointResponse) {
 	t.Helper()
-	expectServiceEndpointsFromIndex(t, fx.Delegate.(*model.EndpointIndexUpdater).Index, svc, port, expected)
+	expectServiceEndpointsFromIndex(t, fx.Delegate.(*model.FakeEndpointIndexUpdater).Index, svc, port, expected)
 }
 
 func setPodReady(pod *v1.Pod) {

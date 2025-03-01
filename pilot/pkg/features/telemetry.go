@@ -15,10 +15,12 @@
 package features
 
 import (
+	"strings"
 	"time"
 
 	"istio.io/istio/pkg/env"
 	"istio.io/istio/pkg/log"
+	"istio.io/istio/pkg/util/sets"
 )
 
 // Define telemetry related features here.
@@ -51,6 +53,21 @@ var (
 		"If true, pilot will add metadata exchange filters, which will be consumed by telemetry filter.",
 	).Get()
 
+	MetadataExchangeAdditionalLabels = func() []any {
+		v := env.Register("PILOT_MX_ADDITIONAL_LABELS", "",
+			"Comma separated list of additional labels to be added to metadata exchange filter.",
+		).Get()
+		if v == "" {
+			return nil
+		}
+		labels := sets.SortedList(sets.New(strings.Split(v, ",")...))
+		res := make([]any, 0, len(labels))
+		for _, lb := range labels {
+			res = append(res, lb)
+		}
+		return res
+	}()
+
 	// This is an experimental feature flag, can be removed once it became stable, and should introduced to Telemetry API.
 	MetricRotationInterval = env.Register("METRIC_ROTATION_INTERVAL", 0*time.Second,
 		"Metric scope rotation interval, set to 0 to disable the metric scope rotation").Get()
@@ -59,7 +76,4 @@ var (
 
 	EnableControllerQueueMetrics = env.Register("ISTIO_ENABLE_CONTROLLER_QUEUE_METRICS", false,
 		"If enabled, publishes metrics for queue depth, latency and processing times.").Get()
-
-	EnableDelimitedStatsTagRegex = env.Register("ENABLE_DELIMITED_STATS_TAG_REGEX", true,
-		"If true, pilot will use the new delimited stat tag regex to generate Envoy stats tags.").Get()
 )

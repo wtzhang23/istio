@@ -22,9 +22,9 @@ import (
 	cluster "github.com/envoyproxy/go-control-plane/envoy/config/cluster/v3"
 	core "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
 	endpoint "github.com/envoyproxy/go-control-plane/envoy/config/endpoint/v3"
+	cares "github.com/envoyproxy/go-control-plane/envoy/extensions/network/dns_resolver/cares/v3"
 	http "github.com/envoyproxy/go-control-plane/envoy/extensions/upstreams/http/v3"
 	discovery "github.com/envoyproxy/go-control-plane/envoy/service/discovery/v3"
-	"google.golang.org/protobuf/proto"
 	anypb "google.golang.org/protobuf/types/known/anypb"
 	"google.golang.org/protobuf/types/known/durationpb"
 	"google.golang.org/protobuf/types/known/structpb"
@@ -64,6 +64,19 @@ var passthroughHttpProtocolOptions = protoconv.MessageToAny(&http.HttpProtocolOp
 	},
 })
 
+var preserveCaseFormatterConfig = &core.Http1ProtocolOptions{
+	HeaderKeyFormat: &core.Http1ProtocolOptions_HeaderKeyFormat{
+		HeaderFormat: &core.Http1ProtocolOptions_HeaderKeyFormat_StatefulFormatter{
+			StatefulFormatter: &core.TypedExtensionConfig{
+				Name: "preserve_case",
+				TypedConfig: &anypb.Any{
+					TypeUrl: "type.googleapis.com/envoy.extensions.http.header_formatters.preserve_case.v3.PreserveCaseFormatterConfig",
+				},
+			},
+		},
+	},
+}
+
 // clusterWrapper wraps Cluster object along with upstream protocol options.
 type clusterWrapper struct {
 	cluster *cluster.Cluster
@@ -84,10 +97,13 @@ type metadataCerts struct {
 // ClusterBuilder interface provides an abstraction for building Envoy Clusters.
 type ClusterBuilder struct {
 	// Proxy related information used to build clusters.
+	// The fields below that influence cluster configuration must be reflected in clusterCache
+	// to ensure accurate differentiation and caching of clusters.
 	serviceTargets     []model.ServiceTarget // Service targets of Proxy.
 	metadataCerts      *metadataCerts        // Client certificates specified in metadata.
 	clusterID          string                // Cluster in which proxy is running.
 	proxyID            string                // Identifier that uniquely identifies a proxy.
+	proxyMetadata      *model.NodeMetadata   // Metadata of the proxy.
 	proxyVersion       *model.IstioVersion   // Version of Proxy.
 	proxyType          model.NodeType        // Indicates whether the proxy is sidecar or gateway.
 	sidecarScope       *model.SidecarScope   // Computed sidecar for the proxy.
@@ -101,9 +117,10 @@ type ClusterBuilder struct {
 	proxyIPAddresses   []string              // IP addresses on which proxy is listening on.
 	configNamespace    string                // Proxy config namespace.
 	// PushRequest to look for updates.
-	req                   *model.PushRequest
-	cache                 model.XdsCache
-	credentialSocketExist bool
+	req                       *model.PushRequest
+	cache                     model.XdsCache
+	credentialSocketExist     bool
+	fileCredentialSocketExist bool
 }
 
 // NewClusterBuilder builds an instance of ClusterBuilder.
@@ -111,6 +128,7 @@ func NewClusterBuilder(proxy *model.Proxy, req *model.PushRequest, cache model.X
 	cb := &ClusterBuilder{
 		serviceTargets:     proxy.ServiceTargets,
 		proxyID:            proxy.ID,
+		proxyMetadata:      proxy.Metadata,
 		proxyType:          proxy.Type,
 		proxyVersion:       model.ParseIstioVersion(proxy.Metadata.IstioVersion),
 		sidecarScope:       proxy.SidecarScope,
@@ -137,6 +155,9 @@ func NewClusterBuilder(proxy *model.Proxy, req *model.PushRequest, cache model.X
 		cb.clusterID = string(proxy.Metadata.ClusterID)
 		if proxy.Metadata.Raw[security.CredentialMetaDataName] == "true" {
 			cb.credentialSocketExist = true
+		}
+		if proxy.Metadata.Raw[security.CredentialFileMetaDataName] == "true" {
+			cb.fileCredentialSocketExist = true
 		}
 	}
 	return cb
@@ -201,7 +222,7 @@ func (cb *ClusterBuilder) buildSubsetCluster(
 		opts.isDrWithSelector = destinationRule.GetWorkloadSelector() != nil
 	}
 	// Apply traffic policy for the subset cluster.
-	cb.applyTrafficPolicy(opts)
+	cb.applyTrafficPolicy(service, opts)
 
 	maybeApplyEdsConfig(subsetCluster.cluster)
 
@@ -224,14 +245,15 @@ func (cb *ClusterBuilder) applyDestinationRule(mc *clusterWrapper, clusterMode C
 	// merge applicable port level traffic policy settings
 	trafficPolicy, _ := util.GetPortLevelTrafficPolicy(destinationRule.GetTrafficPolicy(), port)
 	opts := buildClusterOpts{
-		mesh:                  cb.req.Push.Mesh,
-		serviceTargets:        cb.serviceTargets,
-		mutable:               mc,
-		policy:                trafficPolicy,
-		port:                  port,
-		clusterMode:           clusterMode,
-		direction:             model.TrafficDirectionOutbound,
-		credentialSocketExist: cb.credentialSocketExist,
+		mesh:                      cb.req.Push.Mesh,
+		serviceTargets:            cb.serviceTargets,
+		mutable:                   mc,
+		policy:                    trafficPolicy,
+		port:                      port,
+		clusterMode:               clusterMode,
+		direction:                 model.TrafficDirectionOutbound,
+		credentialSocketExist:     cb.credentialSocketExist,
+		fileCredentialSocketExist: cb.fileCredentialSocketExist,
 	}
 
 	if clusterMode == DefaultClusterMode {
@@ -240,13 +262,14 @@ func (cb *ClusterBuilder) applyDestinationRule(mc *clusterWrapper, clusterMode C
 		opts.meshExternal = service.MeshExternal
 		opts.serviceRegistry = service.Attributes.ServiceRegistry
 		opts.serviceMTLSMode = cb.req.Push.BestEffortInferServiceMTLSMode(destinationRule.GetTrafficPolicy(), service, port)
+		opts.allInstancesHBONE = cb.req.Push.AllInstancesSupportHBONE(service, port)
 	}
 
 	if destRule != nil {
 		opts.isDrWithSelector = destinationRule.GetWorkloadSelector() != nil
 	}
 	// Apply traffic policy for the main default cluster.
-	cb.applyTrafficPolicy(opts)
+	cb.applyTrafficPolicy(service, opts)
 
 	// Apply EdsConfig if needed. This should be called after traffic policy is applied because, traffic policy might change
 	// discovery type.
@@ -254,9 +277,15 @@ func (cb *ClusterBuilder) applyDestinationRule(mc *clusterWrapper, clusterMode C
 
 	cb.applyMetadataExchange(opts.mutable.cluster)
 
-	if service.MeshExternal {
+	if service.MeshExternal || opts.allInstancesHBONE {
+		// Conditionally skips based on config
+		key := "external"
+		if opts.allInstancesHBONE {
+			// Unconditionally skips
+			key = "disable_mx"
+		}
 		im := getOrCreateIstioMetadata(mc.cluster)
-		im.Fields["external"] = &structpb.Value{
+		im.Fields[key] = &structpb.Value{
 			Kind: &structpb.Value_BoolValue{
 				BoolValue: true,
 			},
@@ -323,8 +352,21 @@ func (cb *ClusterBuilder) buildCluster(name string, discoveryType cluster.Cluste
 				c.DnsLookupFamily = cluster.Cluster_V4_ONLY
 			}
 		}
-		c.DnsRefreshRate = cb.req.Push.Mesh.DnsRefreshRate
-		c.RespectDnsTtl = true
+		dnsResolverConfig, err := anypb.New(&cares.CaresDnsResolverConfig{
+			UdpMaxQueries: wrappers.UInt32(features.PilotDNSCaresUDPMaxQueries),
+		})
+		if err != nil {
+			log.Warnf("Could not create typed_dns_cluster_config for %s: %s. Using default configuration.", name, err)
+		} else {
+			c.TypedDnsResolverConfig = &core.TypedExtensionConfig{
+				Name:        "envoy.network.dns_resolver.cares",
+				TypedConfig: dnsResolverConfig,
+			}
+		}
+		// 0 disables jitter.
+		c.DnsJitter = durationpb.New(features.PilotDNSJitterDurationEnv) //nolint:staticcheck // DnsJitter is deprecated
+		c.DnsRefreshRate = cb.req.Push.Mesh.DnsRefreshRate               //nolint:staticcheck // DnsRefreshRate is deprecated
+		c.RespectDnsTtl = true                                           //nolint:staticcheck // RespectDnsTtl is deprecated
 		// we want to run all the STATIC parts as well to build the load assignment
 		fallthrough
 	case cluster.Cluster_STATIC:
@@ -339,13 +381,11 @@ func (cb *ClusterBuilder) buildCluster(name string, discoveryType cluster.Cluste
 			Endpoints:   localityLbEndpoints,
 		}
 	case cluster.Cluster_ORIGINAL_DST:
-		if features.PassthroughTargetPort {
-			if override, f := service.Attributes.PassthroughTargetPorts[uint32(port.Port)]; f {
-				c.LbConfig = &cluster.Cluster_OriginalDstLbConfig_{
-					OriginalDstLbConfig: &cluster.Cluster_OriginalDstLbConfig{
-						UpstreamPortOverride: wrappers.UInt32(override),
-					},
-				}
+		if override, f := service.Attributes.PassthroughTargetPorts[uint32(port.Port)]; f {
+			c.LbConfig = &cluster.Cluster_OriginalDstLbConfig_{
+				OriginalDstLbConfig: &cluster.Cluster_OriginalDstLbConfig{
+					UpstreamPortOverride: wrappers.UInt32(override),
+				},
 			}
 		}
 	}
@@ -437,7 +477,7 @@ func (cb *ClusterBuilder) buildInboundCluster(clusterPort int, bind string,
 		}
 		opts.policy.ConnectionPool = sidecarConnPool
 	}
-	cb.applyTrafficPolicy(opts)
+	cb.applyTrafficPolicy(nil, opts)
 
 	if bind != LocalhostAddress && bind != LocalhostIPv6Address {
 		// iptables will redirect our own traffic to localhost back to us if we do not use the "magic" upstream bind
@@ -514,7 +554,7 @@ func (cb *ClusterBuilder) buildBlackHoleCluster() *cluster.Cluster {
 	c := &cluster.Cluster{
 		Name:                 util.BlackHoleCluster,
 		ClusterDiscoveryType: &cluster.Cluster_Type{Type: cluster.Cluster_STATIC},
-		ConnectTimeout:       proto.Clone(cb.req.Push.Mesh.ConnectTimeout).(*durationpb.Duration),
+		ConnectTimeout:       cb.req.Push.Mesh.ConnectTimeout,
 		LbPolicy:             cluster.Cluster_ROUND_ROBIN,
 	}
 	c.AltStatName = util.DelimitedStatsPrefix(util.BlackHoleCluster)
@@ -527,7 +567,7 @@ func (cb *ClusterBuilder) buildDefaultPassthroughCluster() *cluster.Cluster {
 	cluster := &cluster.Cluster{
 		Name:                 util.PassthroughCluster,
 		ClusterDiscoveryType: &cluster.Cluster_Type{Type: cluster.Cluster_ORIGINAL_DST},
-		ConnectTimeout:       proto.Clone(cb.req.Push.Mesh.ConnectTimeout).(*durationpb.Duration),
+		ConnectTimeout:       cb.req.Push.Mesh.ConnectTimeout,
 		LbPolicy:             cluster.Cluster_CLUSTER_PROVIDED,
 		TypedExtensionProtocolOptions: map[string]*anypb.Any{
 			v3.HttpProtocolOptionsType: passthroughHttpProtocolOptions,
@@ -571,9 +611,14 @@ func (cb *ClusterBuilder) setUseDownstreamProtocol(mc *clusterWrapper) {
 		mc.httpProtocolOptions = &http.HttpProtocolOptions{}
 	}
 	options := mc.httpProtocolOptions
+	// Inherit the HTTP1.x protocol options from the explicit HTTP1.x config.
+	explicitHTTP1Options := &core.Http1ProtocolOptions{}
+	if opts := options.GetExplicitHttpConfig().GetHttpProtocolOptions(); opts != nil {
+		explicitHTTP1Options = opts
+	}
 	options.UpstreamProtocolOptions = &http.HttpProtocolOptions_UseDownstreamProtocolConfig{
 		UseDownstreamProtocolConfig: &http.HttpProtocolOptions_UseDownstreamHttpConfig{
-			HttpProtocolOptions:  &core.Http1ProtocolOptions{},
+			HttpProtocolOptions:  explicitHTTP1Options,
 			Http2ProtocolOptions: http2ProtocolOptions(),
 		},
 	}
@@ -596,6 +641,26 @@ func (cb *ClusterBuilder) setUpstreamProtocol(cluster *clusterWrapper, port *mod
 		setH2Options(cluster)
 		return
 	}
+	// Preserve HTTP/1.x traffic header case
+	isExplicitHTTP := port.Protocol.IsHTTP()
+	isAutoProtocol := port.Protocol.IsUnsupported()
+	effectiveProxyConfig := cb.proxyMetadata.ProxyConfigOrDefault(cb.req.Push.Mesh.GetDefaultConfig())
+	preserveHeaderCase := effectiveProxyConfig.GetProxyHeaders().GetPreserveHttp1HeaderCase().GetValue()
+
+	if (isExplicitHTTP || isAutoProtocol) && preserveHeaderCase {
+		// Apply the stateful formatter for HTTP/1.x headers
+		if cluster.httpProtocolOptions == nil {
+			cluster.httpProtocolOptions = &http.HttpProtocolOptions{}
+		}
+		options := cluster.httpProtocolOptions
+		options.UpstreamProtocolOptions = &http.HttpProtocolOptions_ExplicitHttpConfig_{
+			ExplicitHttpConfig: &http.HttpProtocolOptions_ExplicitHttpConfig{
+				ProtocolConfig: &http.HttpProtocolOptions_ExplicitHttpConfig_HttpProtocolOptions{
+					HttpProtocolOptions: preserveCaseFormatterConfig,
+				},
+			},
+		}
+	}
 
 	// Add use_downstream_protocol for sidecar proxy only if protocol sniffing is enabled. Since
 	// protocol detection is disabled for gateway and use_downstream_protocol is used under protocol
@@ -605,7 +670,7 @@ func (cb *ClusterBuilder) setUpstreamProtocol(cluster *clusterWrapper, port *mod
 	// h2. Clients would then connect with h2, while the upstream may not support it. This is not a
 	// concern for plaintext, but we do not have a way to distinguish https vs http here. If users of
 	// gateway want this behavior, they can configure UseClientProtocol explicitly.
-	if cb.sidecarProxy() && port.Protocol.IsUnsupported() {
+	if cb.sidecarProxy() && isAutoProtocol {
 		// Use downstream protocol. If the incoming traffic use HTTP 1.1, the
 		// upstream cluster will use HTTP 1.1, if incoming traffic use HTTP2,
 		// the upstream cluster will use HTTP2.
@@ -615,11 +680,11 @@ func (cb *ClusterBuilder) setUpstreamProtocol(cluster *clusterWrapper, port *mod
 
 // normalizeClusters normalizes clusters to avoid duplicate clusters. This should be called
 // at the end before adding the cluster to list of clusters.
-func (cb *ClusterBuilder) normalizeClusters(clusters []*discovery.Resource) []*discovery.Resource {
+func (cb *ClusterBuilder) normalizeClusters(clusters []*cluster.Cluster) []*cluster.Cluster {
 	// resolve cluster name conflicts. there can be duplicate cluster names if there are conflicting service definitions.
 	// for any clusters that share the same name the first cluster is kept and the others are discarded.
 	have := sets.String{}
-	out := make([]*discovery.Resource, 0, len(clusters))
+	out := make([]*cluster.Cluster, 0, len(clusters))
 	for _, c := range clusters {
 		if !have.InsertContains(c.Name) {
 			out = append(out, c)
@@ -734,7 +799,7 @@ func (cb *ClusterBuilder) buildExternalSDSCluster(addr string) *cluster.Cluster 
 	c := &cluster.Cluster{
 		Name:                 security.SDSExternalClusterName,
 		ClusterDiscoveryType: &cluster.Cluster_Type{Type: cluster.Cluster_STATIC},
-		ConnectTimeout:       proto.Clone(cb.req.Push.Mesh.ConnectTimeout).(*durationpb.Duration),
+		ConnectTimeout:       cb.req.Push.Mesh.ConnectTimeout,
 		LoadAssignment: &endpoint.ClusterLoadAssignment{
 			ClusterName: security.SDSExternalClusterName,
 			Endpoints: []*endpoint.LocalityLbEndpoints{

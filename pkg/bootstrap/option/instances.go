@@ -19,7 +19,6 @@ import (
 
 	"google.golang.org/protobuf/types/known/durationpb"
 
-	meshAPI "istio.io/api/mesh/v1alpha1"
 	networkingAPI "istio.io/api/networking/v1alpha3"
 	"istio.io/istio/pkg/model"
 )
@@ -125,6 +124,10 @@ func OutlierLogPath(value string) Instance {
 	return newOptionOrSkipIfZero("outlier_log_path", value)
 }
 
+func CustomFileSDSPath(value string) Instance {
+	return newOptionOrSkipIfZero("custom_file_path", value)
+}
+
 func ApplicationLogJSON(value bool) Instance {
 	return newOption("log_json", value)
 }
@@ -135,15 +138,6 @@ func LightstepAddress(value string) Instance {
 
 func LightstepToken(value string) Instance {
 	return newOption("lightstepToken", value)
-}
-
-func OpenCensusAgentAddress(value string) Instance {
-	return newOptionOrSkipIfZero("openCensusAgent", value)
-}
-
-func OpenCensusAgentContexts(value []meshAPI.Tracing_OpenCensusAgent_TraceContext) Instance {
-	return newOption("openCensusAgentContexts", value).
-		withConvert(openCensusAgentContextConverter(value))
 }
 
 func StackDriverEnabled(value bool) Instance {
@@ -269,20 +263,12 @@ func MetadataDiscovery(value bool) Instance {
 	return newOption("metadata_discovery", value)
 }
 
-func DelimitedStatsTagsEnabled(value bool) Instance {
-	return newOption("delimited_stats_tags_enabled", value)
-}
-
 func MetricsLocalhostAccessOnly(proxyMetadata map[string]string) Instance {
 	value, ok := proxyMetadata["METRICS_LOCALHOST_ACCESS_ONLY"]
 	if ok && value == "true" {
 		return newOption("metrics_localhost_access_only", true)
 	}
 	return newOption("metrics_localhost_access_only", false)
-}
-
-func DeferredClusterCreation(deferred bool) Instance {
-	return newOption("deferred_cluster_creation", deferred)
 }
 
 func DeferredStatsCreation(deferred bool) Instance {
@@ -299,6 +285,10 @@ func LoadStatsConfigJSONStr(node *model.Node) Instance {
 		return newOption("load_stats_config_json_str", json)
 	}
 	return skipOption("load_stats_config_json_str")
+}
+
+func WorkloadIdentitySocketFile(value string) Instance {
+	return newOption("workload_identity_socket_file", value)
 }
 
 type HistogramMatch struct {

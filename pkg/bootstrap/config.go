@@ -39,6 +39,7 @@ import (
 	"istio.io/istio/pkg/kube/labels"
 	"istio.io/istio/pkg/log"
 	"istio.io/istio/pkg/model"
+	"istio.io/istio/pkg/ptr"
 	"istio.io/istio/pkg/security"
 	"istio.io/istio/pkg/util/sets"
 	"istio.io/istio/pkg/version"
@@ -99,21 +100,29 @@ func (cfg Config) toTemplateParams() (map[string]any, error) {
 	metadataDiscovery := cfg.Metadata.MetadataDiscovery
 	if strings.HasPrefix(cfg.ID, "waypoint~") {
 		xdsType = "DELTA_GRPC"
-		metadataDiscovery = true
+		metadataDiscovery = ptr.Of(model.StringBool(true))
 	}
 
+	var mDiscovery bool
+	if metadataDiscovery != nil && *metadataDiscovery {
+		mDiscovery = true
+	}
+	customSDSPath := ""
+	if _, f := cfg.RawMetadata[security.CredentialFileMetaDataName]; f {
+		customSDSPath = security.FileCredentialNameSocketPath
+	}
 	opts = append(opts,
 		option.NodeID(cfg.ID),
 		option.NodeType(cfg.ID),
 		option.PilotSubjectAltName(cfg.Metadata.PilotSubjectAltName),
 		option.OutlierLogPath(cfg.Metadata.OutlierLogPath),
+		option.CustomFileSDSPath(customSDSPath),
 		option.ApplicationLogJSON(cfg.LogAsJSON),
 		option.DiscoveryHost(discHost),
 		option.Metadata(cfg.Metadata),
 		option.XdsType(xdsType),
-		option.MetadataDiscovery(bool(metadataDiscovery)),
+		option.MetadataDiscovery(mDiscovery),
 		option.MetricsLocalhostAccessOnly(cfg.Metadata.ProxyConfig.ProxyMetadata),
-		option.DeferredClusterCreation(features.EnableDeferredClusterCreation),
 		option.DeferredStatsCreation(features.EnableDeferredStatsCreation),
 		option.BypassOverloadManagerForStaticListeners(features.BypassOverloadManagerForStaticListeners),
 	)
@@ -136,6 +145,8 @@ func (cfg Config) toTemplateParams() (map[string]any, error) {
 			}
 		}
 	}
+
+	opts = append(opts, option.WorkloadIdentitySocketFile(cfg.Metadata.WorkloadIdentitySocketFile))
 
 	// Support passing extra info from node environment as metadata
 	opts = append(opts, getNodeMetadataOptions(cfg.Node, cfg.CompliancePolicy)...)
@@ -285,7 +296,7 @@ func getStatsOptions(meta *model.BootstrapNodeMetadata) []option.Instance {
 				return buckets[i].Match.Prefix < buckets[j].Match.Prefix
 			})
 		} else {
-			log.Warnf("Failed to unmarshal histogram buckets: %v", bucketsAnno, err)
+			log.Warnf("Failed to unmarshal histogram buckets %v: %v", bucketsAnno, err)
 		}
 	}
 
@@ -304,7 +315,6 @@ func getStatsOptions(meta *model.BootstrapNodeMetadata) []option.Instance {
 		option.EnvoyExtraStatTags(extraStatTags),
 		option.EnvoyHistogramBuckets(buckets),
 		option.EnvoyStatsCompression(compression),
-		option.DelimitedStatsTagsEnabled(features.EnableDelimitedStatsTagRegex),
 	}
 }
 
@@ -461,10 +471,6 @@ func getProxyConfigOptions(metadata *model.BootstrapNodeMetadata) ([]option.Inst
 				option.StackDriverMaxAnnotations(getInt64ValueOrDefault(tracer.Stackdriver.MaxNumberOfAnnotations, 200)),
 				option.StackDriverMaxAttributes(getInt64ValueOrDefault(tracer.Stackdriver.MaxNumberOfAttributes, 200)),
 				option.StackDriverMaxEvents(getInt64ValueOrDefault(tracer.Stackdriver.MaxNumberOfMessageEvents, 200)))
-		case *meshAPI.Tracing_OpenCensusAgent_:
-			c := tracer.OpenCensusAgent.Context
-			opts = append(opts, option.OpenCensusAgentAddress(tracer.OpenCensusAgent.Address),
-				option.OpenCensusAgentContexts(c))
 		}
 
 		opts = append(opts, option.TracingTLS(config.Tracing.TlsSettings, metadata, isH2))
@@ -571,13 +577,16 @@ type MetadataOptions struct {
 	ProxyConfig                 *meshAPI.ProxyConfig
 	PilotSubjectAltName         []string
 	CredentialSocketExists      bool
+	CustomCredentialsFileExists bool
 	XDSRootCert                 string
 	OutlierLogPath              string
 	annotationFilePath          string
 	EnvoyStatusPort             int
 	EnvoyPrometheusPort         int
 	ExitOnZeroActiveConnections bool
-	MetadataDiscovery           bool
+	MetadataDiscovery           *bool
+	EnvoySkipDeprecatedLogs     bool
+	WorkloadIdentitySocketFile  string
 }
 
 const (
@@ -633,7 +642,14 @@ func GetNodeMetaData(options MetadataOptions) (*model.Node, error) {
 	meta.EnvoyStatusPort = options.EnvoyStatusPort
 	meta.EnvoyPrometheusPort = options.EnvoyPrometheusPort
 	meta.ExitOnZeroActiveConnections = model.StringBool(options.ExitOnZeroActiveConnections)
-	meta.MetadataDiscovery = model.StringBool(options.MetadataDiscovery)
+	if options.MetadataDiscovery == nil {
+		meta.MetadataDiscovery = nil
+	} else {
+		meta.MetadataDiscovery = ptr.Of(model.StringBool(*options.MetadataDiscovery))
+	}
+	meta.EnvoySkipDeprecatedLogs = model.StringBool(options.EnvoySkipDeprecatedLogs)
+
+	meta.WorkloadIdentitySocketFile = options.WorkloadIdentitySocketFile
 
 	meta.ProxyConfig = (*model.NodeMetaProxyConfig)(options.ProxyConfig)
 
@@ -701,6 +717,15 @@ func GetNodeMetaData(options MetadataOptions) (*model.Node, error) {
 	meta.OutlierLogPath = options.OutlierLogPath
 	if options.CredentialSocketExists {
 		untypedMeta[security.CredentialMetaDataName] = "true"
+	}
+	if options.CustomCredentialsFileExists {
+		untypedMeta[security.CredentialFileMetaDataName] = "true"
+	}
+
+	if meta.MetadataDiscovery == nil {
+		// If it's disabled, set it if ambient is enabled
+		meta.MetadataDiscovery = ptr.Of(meta.EnableHBONE)
+		log.Debugf("metadata discovery is disabled, setting it to %s based on if ambient HBONE is enabled", meta.EnableHBONE)
 	}
 
 	return &model.Node{

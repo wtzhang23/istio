@@ -276,22 +276,6 @@ func TestBuildHTTPRoutes(t *testing.T) {
 		g.Expect(len(routes[0].GetRoute().GetRetryPolicy().RetryHostPredicate)).To(Equal(1))
 	})
 
-	t.Run("for virtual service with exact matching on JWT claims", func(t *testing.T) {
-		g := NewWithT(t)
-		cg := core.NewConfigGenTest(t, core.TestOptions{})
-
-		routes, err := route.BuildHTTPRoutesForVirtualService(node(cg), virtualServiceWithExactMatchingOnHeaderForJWTClaims,
-			serviceRegistry, nil, 8080, gatewayNames, route.RouteOptions{})
-		xdstest.ValidateRoutes(t, routes)
-		g.Expect(err).NotTo(HaveOccurred())
-		g.Expect(len(routes)).To(Equal(1))
-		g.Expect(len(routes[0].GetMatch().GetHeaders())).To(Equal(0))
-		g.Expect(routes[0].GetMatch().GetDynamicMetadata()[0].GetFilter()).To(Equal("istio_authn"))
-		g.Expect(routes[0].GetMatch().GetDynamicMetadata()[0].GetInvert()).To(BeFalse())
-		g.Expect(routes[0].GetMatch().GetDynamicMetadata()[1].GetFilter()).To(Equal("istio_authn"))
-		g.Expect(routes[0].GetMatch().GetDynamicMetadata()[1].GetInvert()).To(BeTrue())
-	})
-
 	t.Run("for virtual service with exact matching on JWT claims with extended", func(t *testing.T) {
 		g := NewWithT(t)
 		cg := core.NewConfigGenTest(t, core.TestOptions{})
@@ -947,6 +931,19 @@ func TestBuildHTTPRoutes(t *testing.T) {
 		redirectAction, ok := routes[0].Action.(*envoyroute.Route_Redirect)
 		g.Expect(ok).NotTo(BeFalse())
 		g.Expect(redirectAction.Redirect.ResponseCode).To(Equal(envoyroute.RedirectAction_PERMANENT_REDIRECT))
+	})
+
+	t.Run("for invalid redirect code", func(t *testing.T) {
+		g := NewWithT(t)
+		cg := core.NewConfigGenTest(t, core.TestOptions{})
+
+		routes, err := route.BuildHTTPRoutesForVirtualService(node(cg), virtualServiceWithInvalidRedirect, serviceRegistry,
+			nil, 8080, gatewayNames, route.RouteOptions{})
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(len(routes)).To(Equal(1))
+
+		_, ok := routes[0].Action.(*envoyroute.Route_Redirect)
+		g.Expect(ok).To(BeFalse())
 	})
 
 	t.Run("for path prefix redirect", func(t *testing.T) {
@@ -1872,6 +1869,26 @@ var virtualServiceWithRedirect = config.Config{
 					Uri:          "example.org",
 					Authority:    "some-authority.default.svc.cluster.local",
 					RedirectCode: 308,
+				},
+			},
+		},
+	},
+}
+
+var virtualServiceWithInvalidRedirect = config.Config{
+	Meta: config.Meta{
+		GroupVersionKind: gvk.VirtualService,
+		Name:             "acme",
+	},
+	Spec: &networking.VirtualService{
+		Hosts:    []string{},
+		Gateways: []string{"some-gateway"},
+		Http: []*networking.HTTPRoute{
+			{
+				Redirect: &networking.HTTPRedirect{
+					Uri:          "example.org",
+					Authority:    "some-authority.default.svc.cluster.local",
+					RedirectCode: 317,
 				},
 			},
 		},
@@ -2971,14 +2988,16 @@ func TestInboundHTTPRoute(t *testing.T) {
 	testCases := []struct {
 		name        string
 		enableRetry bool
+		protocol    protocol.Instance
 		expected    *envoyroute.Route
 	}{
 		{
-			name:        "enable retry",
+			name:        "enable retry, http protocol",
 			enableRetry: true,
+			protocol:    protocol.HTTP,
 			expected: &envoyroute.Route{
 				Name:  "default",
-				Match: route.TranslateRouteMatch(config.Config{}, nil, true),
+				Match: route.TranslateRouteMatch(config.Config{}, nil),
 				Action: &envoyroute.Route_Route{
 					Route: &envoyroute.RouteAction{
 						ClusterSpecifier: &envoyroute.RouteAction_Cluster{Cluster: "cluster"},
@@ -3001,11 +3020,34 @@ func TestInboundHTTPRoute(t *testing.T) {
 			},
 		},
 		{
-			name:        "disable retry",
-			enableRetry: false,
+			name:        "enable retry, grpc protocol",
+			enableRetry: true,
+			protocol:    protocol.GRPC,
 			expected: &envoyroute.Route{
 				Name:  "default",
-				Match: route.TranslateRouteMatch(config.Config{}, nil, true),
+				Match: route.TranslateRouteMatch(config.Config{}, nil),
+				Action: &envoyroute.Route_Route{
+					Route: &envoyroute.RouteAction{
+						ClusterSpecifier: &envoyroute.RouteAction_Cluster{Cluster: "cluster"},
+						Timeout:          route.Notimeout,
+						MaxStreamDuration: &envoyroute.RouteAction_MaxStreamDuration{
+							MaxStreamDuration:    route.Notimeout,
+							GrpcTimeoutHeaderMax: route.Notimeout,
+						},
+					},
+				},
+				Decorator: &envoyroute.Decorator{
+					Operation: "operation",
+				},
+			},
+		},
+		{
+			name:        "disable retry",
+			enableRetry: false,
+			protocol:    protocol.HTTP,
+			expected: &envoyroute.Route{
+				Name:  "default",
+				Match: route.TranslateRouteMatch(config.Config{}, nil),
 				Action: &envoyroute.Route_Route{
 					Route: &envoyroute.RouteAction{
 						ClusterSpecifier: &envoyroute.RouteAction_Cluster{Cluster: "cluster"},
@@ -3026,7 +3068,7 @@ func TestInboundHTTPRoute(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			test.SetForTest(t, &features.EnableInboundRetryPolicy, tc.enableRetry)
 			inroute := route.BuildDefaultHTTPInboundRoute(&model.Proxy{IstioVersion: &model.IstioVersion{Major: 1, Minor: 24, Patch: -1}},
-				"cluster", "operation")
+				"cluster", "operation", tc.protocol)
 			if !reflect.DeepEqual(tc.expected, inroute) {
 				t.Errorf("error in inbound routes. Got: %v, Want: %v", inroute, tc.expected)
 			}

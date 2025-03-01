@@ -27,6 +27,7 @@ import (
 	"istio.io/istio/pkg/config/analysis"
 	"istio.io/istio/pkg/config/analysis/analyzers/annotations"
 	"istio.io/istio/pkg/config/analysis/analyzers/authz"
+	"istio.io/istio/pkg/config/analysis/analyzers/conditions"
 	"istio.io/istio/pkg/config/analysis/analyzers/deployment"
 	"istio.io/istio/pkg/config/analysis/analyzers/deprecation"
 	"istio.io/istio/pkg/config/analysis/analyzers/destinationrule"
@@ -244,6 +245,23 @@ var testGrid = []testCase{
 	{
 		name:       "conflicting gateways detect",
 		inputFiles: []string{"testdata/conflicting-gateways.yaml"},
+		analyzer:   &gateway.ConflictingGatewayAnalyzer{},
+		expected: []message{
+			{msg.ConflictingGateways, "Gateway alpha"},
+			{msg.ConflictingGateways, "Gateway beta"},
+		},
+	},
+	{
+		name:       "gateways with different port are non-conflicting",
+		inputFiles: []string{"testdata/gateway-different-port.yaml"},
+		analyzer:   &gateway.ConflictingGatewayAnalyzer{},
+		expected:   []message{
+			// no conflict expected, verify that no false-positive conflict is returned
+		},
+	},
+	{
+		name:       "conflicting gateways with multiple port declarations",
+		inputFiles: []string{"testdata/conflicting-gateways-multiple-ports.yaml"},
 		analyzer:   &gateway.ConflictingGatewayAnalyzer{},
 		expected: []message{
 			{msg.ConflictingGateways, "Gateway alpha"},
@@ -971,6 +989,20 @@ var testGrid = []testCase{
 			{msg.ServiceEntryAddressesRequired, "ServiceEntry address-missing-uppercase"},
 		},
 	},
+	{
+		name:       "Condition Analyzer",
+		inputFiles: []string{"testdata/condition-analyzer.yaml"},
+		analyzer:   &conditions.ConditionAnalyzer{},
+		expected: []message{
+			{msg.NegativeConditionStatus, "Service default/negative-condition-svc"},
+			{msg.NegativeConditionStatus, "ServiceEntry default/negative-condition-svcEntry"},
+			{msg.NegativeConditionStatus, "AuthorizationPolicy default/negative-condition-authz"},
+			{msg.NegativeConditionStatus, "Gateway default/negative-condition-gateway"},
+			{msg.NegativeConditionStatus, "HTTPRoute default/negative-condition-httproute"},
+			{msg.NegativeConditionStatus, "GRPCRoute default/negative-condition-grpcroute"},
+			{msg.NegativeConditionStatus, "AuthorizationPolicy default/negative-condition-authz-partially-invalid"},
+		},
+	},
 }
 
 // regex patterns for analyzer names that should be explicitly ignored for testing
@@ -987,7 +1019,6 @@ func TestAnalyzers(t *testing.T) {
 
 	// For each test case, verify we get the expected messages as output
 	for _, tc := range testGrid {
-		tc := tc // Capture range variable so subtests work correctly
 		t.Run(tc.name, func(t *testing.T) {
 			g := NewWithT(t)
 
