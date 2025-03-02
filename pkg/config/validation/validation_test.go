@@ -805,6 +805,57 @@ func TestValidateTlsOptions(t *testing.T) {
 			},
 			"", "",
 		},
+		{
+			"alpns specified with simple TLS",
+			&networking.ServerTLSSettings{
+				Mode:           networking.ServerTLSSettings_SIMPLE,
+				Alpns:          []string{"h2", "http/1.1"},
+				CredentialName: "credential",
+			},
+			"", "",
+		},
+		{
+			"alpns specified with mTLS",
+			&networking.ServerTLSSettings{
+				Mode:           networking.ServerTLSSettings_MUTUAL,
+				Alpns:          []string{"h2", "http/1.1"},
+				CredentialName: "credential",
+			},
+			"", "",
+		},
+		{
+			"alpns specified with optional mTLS",
+			&networking.ServerTLSSettings{
+				Mode:           networking.ServerTLSSettings_OPTIONAL_MUTUAL,
+				Alpns:          []string{"h2", "http/1.1"},
+				CredentialName: "credential",
+			},
+			"", "",
+		},
+		{
+			"alpns specified with Istio mTLS",
+			&networking.ServerTLSSettings{
+				Mode:  networking.ServerTLSSettings_ISTIO_MUTUAL,
+				Alpns: []string{"h2", "http/1.1"},
+			},
+			"ISTIO_MUTUAL TLS mode does not support overriding ALPNs", "",
+		},
+		{
+			"alpns specified with passthrough mTLS",
+			&networking.ServerTLSSettings{
+				Mode:  networking.ServerTLSSettings_PASSTHROUGH,
+				Alpns: []string{"h2", "http/1.1"},
+			},
+			"PASSTHROUGH mode does not support overriding ALPNs", "",
+		},
+		{
+			"alpns specified with auto passthrough mTLS",
+			&networking.ServerTLSSettings{
+				Mode:  networking.ServerTLSSettings_AUTO_PASSTHROUGH,
+				Alpns: []string{"h2", "http/1.1"},
+			},
+			"AUTO_PASSTHROUGH mode does not support overriding ALPNs", "",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

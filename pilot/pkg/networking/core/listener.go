@@ -127,7 +127,7 @@ func (configgen *ConfigGeneratorImpl) BuildListeners(node *model.Proxy,
 func BuildListenerTLSContext(serverTLSSettings *networking.ServerTLSSettings,
 	proxy *model.Proxy, mesh *meshconfig.MeshConfig, transportProtocol istionetworking.TransportProtocol, gatewayTCPServerWithTerminatingTLS bool,
 ) *auth.DownstreamTlsContext {
-	alpnByTransport := util.ALPNHttp
+	alpnByTransport := serverTLSSettings.Alpns
 	if transportProtocol == istionetworking.TransportProtocolQUIC {
 		alpnByTransport = util.ALPNHttp3OverQUIC
 	} else if transportProtocol == istionetworking.TransportProtocolTCP &&
@@ -138,6 +138,8 @@ func BuildListenerTLSContext(serverTLSSettings *networking.ServerTLSSettings,
 		} else {
 			alpnByTransport = util.ALPNDownstreamWithMxc
 		}
+	} else if len(serverTLSSettings.Alpns) == 0 {
+		alpnByTransport = util.ALPNHttp
 	}
 
 	ctx := &auth.DownstreamTlsContext{

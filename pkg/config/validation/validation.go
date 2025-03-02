@@ -558,6 +558,9 @@ func validateTLSOptions(tls *networking.ServerTLSSettings) (v Validation) {
 		if tls.CredentialName != "" {
 			v = AppendValidation(v, fmt.Errorf("ISTIO_MUTUAL TLS cannot have associated credentialName"))
 		}
+		if len(tls.Alpns) > 0 {
+			v = AppendValidation(v, fmt.Errorf("ISTIO_MUTUAL TLS mode does not support overriding ALPNs"))
+		}
 		return
 	}
 
@@ -565,6 +568,9 @@ func validateTLSOptions(tls *networking.ServerTLSSettings) (v Validation) {
 		if tls.CaCrl != "" || tls.ServerCertificate != "" || tls.PrivateKey != "" || tls.CaCertificates != "" || tls.CredentialName != "" {
 			// Warn for backwards compatibility
 			v = AppendWarningf(v, "%v mode does not use certificates, they will be ignored", tls.Mode)
+		}
+		if len(tls.Alpns) > 0 {
+			v = AppendValidation(v, fmt.Errorf("%v mode does not support overriding ALPNs", tls.Mode))
 		}
 	}
 
